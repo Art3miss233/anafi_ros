@@ -40,8 +40,14 @@ from rcl_interfaces.msg import (
 )
 from ament_index_python.packages import get_package_share_directory
 from std_msgs.msg import UInt8, UInt16, Int8, Float32, String, Header, Bool
-from geometry_msgs.msg import PointStamped, QuaternionStamped, Vector3Stamped
-from sensor_msgs.msg import Image, CameraInfo
+from geometry_msgs.msg import (
+    PointStamped,
+    QuaternionStamped,
+    Vector3Stamped,
+    PoseStamped,
+    TwistStamped,
+)
+from sensor_msgs.msg import Image, CameraInfo, NavSatFix
 from builtin_interfaces.msg import Time
 from std_srvs.srv import Trigger, SetBool
 from cv_bridge import CvBridge
@@ -195,11 +201,20 @@ class Anafi(Node):
         self.pub_position = self.node.create_publisher(
             PointStamped, "drone/position", qos_profile_system_default
         )
+        self.pub_location = self.node.create_publisher(
+            NavSatFix, "drone/location", qos_profile_system_default
+        )
+        self.pub_pose = self.node.create_publisher(
+            PoseStamped, "drone/pose", qos_profile_system_default
+        )
         self.pub_local_position = self.node.create_publisher(
             PointStamped, "drone/position_local", qos_profile_system_default
         )
         self.pub_speed = self.node.create_publisher(
             Vector3Stamped, "drone/speed", qos_profile_sensor_data
+        )
+        self.pub_speed_twisted = self.node.create_publisher(
+            TwistStamped, "polled_body_velocities", qos_profile_sensor_data
         )
         self.pub_link_goodput = self.node.create_publisher(
             UInt16, "link/goodput", qos_profile_system_default
@@ -1432,7 +1447,7 @@ class Anafi(Node):
             vmeta = (
                 yuv_frame.vmeta()
             )  # yuv_frame.vmeta() returns a dictionary that contains additional metadata from the drone
-            self.node.get_logger().debug(
+            self.node.get_logger().info(
                 "yuv_frame.vmeta = " + str(vmeta), throttle_duration_sec=10
             )
 
@@ -1454,8 +1469,8 @@ class Anafi(Node):
                 msg_attitude.header = header
                 msg_attitude.header.frame_id = "/world"
                 msg_attitude.quaternion.x = drone_quat["x"]
-                msg_attitude.quaternion.y = -drone_quat["y"]
-                msg_attitude.quaternion.z = -drone_quat["z"]
+                msg_attitude.quaternion.y = drone_quat["y"]
+                msg_attitude.quaternion.z = drone_quat["z"]
                 msg_attitude.quaternion.w = drone_quat["w"]
                 self.pub_attitude.publish(msg_attitude)
 
@@ -1480,8 +1495,8 @@ class Anafi(Node):
                     msg_position.header = header
                     msg_position.header.frame_id = "/world"
                     msg_position.point.x = position["north"]
-                    msg_position.point.y = -position["east"]
-                    msg_position.point.z = -position["down"]
+                    msg_position.point.y = position["east"]
+                    msg_position.point.z = position["down"]
                     self.pub_position.publish(msg_position)
 
                 if "local_position" in vmeta[1]["drone"]:
@@ -1494,14 +1509,37 @@ class Anafi(Node):
                     msg_local_position.point.z = local_position["z"]
                     self.pub_local_position.publish(msg_local_position)
 
+                if "location" in vmeta[1]["drone"]:
+                    location = vmeta[1]["drone"]["location"]
+                    self.node.get_logger().debug(
+                        "Location: %s" % str(location), throttle_duration_sec=10
+                    )
+                    msg_location = NavSatFix()
+                    msg_location.header = header
+                    msg_location.header.frame_id = "/world"
+                    msg_location.latitude = location["latitude"]
+                    msg_location.longitude = location["longitude"]
+                    msg_location.altitude = location["altitude_egm96amsl"]
+                    self.pub_location.publish(msg_location)
+
+                    msg_pose = PoseStamped()
+                    msg_pose.header = header
+                    msg_pose.header.frame_id = "/world"
+                    msg_pose.pose.position.x = location["latitude"]
+                    msg_pose.pose.position.y = location["longitude"]
+                    msg_pose.pose.position.z = location["altitude_egm96amsl"]
+
+                    msg_pose.pose.orientation = msg_attitude.quaternion
+                    self.pub_pose.publish(msg_pose)
+
                 speed = vmeta[1]["drone"]["speed"]  # optical flow speed (m/s)
-                v = [speed["north"], -speed["east"], -speed["down"]]
+                v = [speed["north"], speed["east"], speed["down"]]
                 q = quaternion_inverse(
                     [
                         drone_quat["w"],
                         drone_quat["x"],
-                        -drone_quat["y"],
-                        -drone_quat["z"],
+                        drone_quat["y"],
+                        drone_quat["z"],
                     ]
                 )
                 v = rotate_vector(q, v)
@@ -1511,10 +1549,16 @@ class Anafi(Node):
                 msg_speed.vector.x = v[0]
                 msg_speed.vector.y = v[1]
                 msg_speed.vector.z = v[2]
-                # msg_speed.vector.x =  math.cos(yaw)*speed['north'] - math.sin(yaw)*speed['east']
-                # msg_speed.vector.y = -math.sin(yaw)*speed['north'] - math.cos(yaw)*speed['east']
-                # msg_speed.vector.z = -speed['down']
+
                 self.pub_speed.publish(msg_speed)
+
+                msg_speed_twisted = TwistStamped()
+                msg_speed_twisted.header = header
+                msg_speed_twisted.header.frame_id = "/body"
+                msg_speed_twisted.twist.linear.x = v[0]
+                msg_speed_twisted.twist.linear.y = v[1]
+                msg_speed_twisted.twist.linear.z = v[2]
+                self.pub_speed_twisted.publish(msg_speed_twisted)
 
                 battery_percentage = vmeta[1]["drone"][
                     "battery_percentage"
@@ -1532,8 +1576,8 @@ class Anafi(Node):
                 msg_attitude.header = header
                 msg_attitude.header.frame_id = "/world"
                 msg_attitude.quaternion.x = gimbal_quat["x"]
-                msg_attitude.quaternion.y = -gimbal_quat["y"]
-                msg_attitude.quaternion.z = -gimbal_quat["z"]
+                msg_attitude.quaternion.y = gimbal_quat["y"]
+                msg_attitude.quaternion.z = gimbal_quat["z"]
                 msg_attitude.quaternion.w = gimbal_quat["w"]
                 self.pub_gimbal_attitude.publish(msg_attitude)
 

@@ -17,6 +17,8 @@
 	<depend>geometry_msgs</depend>
 	<depend>sensor_msgs</depend>
 	<depend>anafi_ros_interfaces</depend>
+	<depend>anafi_uav_msgs</depend>
+	<depend>topic_tools</depend>
 	
 	<exec_depend>ros2launch</exec_depend>
     
